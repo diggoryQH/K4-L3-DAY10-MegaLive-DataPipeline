@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from statistics import mean
 import os
+import signal
 import sys
 import types
 from typing import Any
@@ -46,6 +47,9 @@ def _token_f1(reference: str, prediction: str) -> float:
 
 
 def _judge_answer(settings: Settings, question: str, reference: str, prediction: str) -> JudgeVerdict:
+    if os.getenv("USE_LLM_JUDGE", "").lower() not in {"1", "true", "yes"}:
+        return _heuristic_judge(reference, prediction, "Set USE_LLM_JUDGE=1 to enable external LLM judging.")
+
     prompt = f"""
 Evaluate the model answer against the reference answer.
 
@@ -60,14 +64,36 @@ Return:
 """.strip()
     try:
         llm = build_llm(settings=settings, temperature=0.0).with_structured_output(JudgeVerdict)
-        return llm.invoke(prompt)
+        return _invoke_with_timeout(llm, prompt)
     except Exception:
-        score = 5 if _token_f1(reference, prediction) >= 0.95 else 3 if _token_f1(reference, prediction) >= 0.5 else 1
-        return JudgeVerdict(
-            score=score,
-            correct=score >= 3,
-            reasoning="Fallback heuristic judge used because the LLM evaluator was unavailable.",
-        )
+        return _heuristic_judge(reference, prediction, "Fallback heuristic judge used because the LLM evaluator was unavailable.")
+
+
+def _heuristic_judge(reference: str, prediction: str, reasoning: str) -> JudgeVerdict:
+    score = 5 if _token_f1(reference, prediction) >= 0.95 else 3 if _token_f1(reference, prediction) >= 0.5 else 1
+    return JudgeVerdict(
+        score=score,
+        correct=score >= 3,
+        reasoning=reasoning,
+    )
+
+
+def _invoke_with_timeout(llm, prompt: str) -> JudgeVerdict:
+    timeout_seconds = int(os.getenv("LLM_JUDGE_TIMEOUT_SECONDS", "12"))
+    if not hasattr(signal, "SIGALRM"):
+        return llm.invoke(prompt)
+
+    def _handle_timeout(signum, frame):
+        raise TimeoutError(f"LLM judge exceeded {timeout_seconds} seconds.")
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    try:
+        signal.signal(signal.SIGALRM, _handle_timeout)
+        signal.setitimer(signal.ITIMER_REAL, timeout_seconds)
+        return llm.invoke(prompt)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
 
 
 def _run_ragas(settings: Settings, answers: list[dict[str, Any]]) -> dict[str, Any]:

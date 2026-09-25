@@ -14,7 +14,7 @@
 | `embedding_backend` | chroma |
 | `collection_name` | papers-baseline |
 | `top_k` | 4 |
-| `run_timestamp_utc` | 2026-09-25T08:51:48.790180+00:00 |
+| `run_timestamp_utc` | 2026-09-25T09:16:05.723684+00:00 |
 
 ## Evaluation Metrics
 
